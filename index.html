@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>File URL Downloader</title>
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 24px;
+      display: grid;
+      place-items: center;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-family: system-ui, sans-serif;
+    }
+
+    main {
+      width: 100%;
+      max-width: 580px;
+      padding: 28px;
+      border: 1px solid #334155;
+      border-radius: 18px;
+      background: #1e293b;
+      box-shadow: 0 20px 60px #0004;
+    }
+
+    h1 {
+      margin-top: 0;
+      font-size: 1.7rem;
+    }
+
+    p {
+      line-height: 1.6;
+      color: #cbd5e1;
+    }
+
+    label {
+      display: block;
+      margin: 20px 0 8px;
+      font-weight: 600;
+    }
+
+    input {
+      width: 100%;
+      padding: 13px;
+      border: 1px solid #64748b;
+      border-radius: 8px;
+      background: #0f172a;
+      color: #fff;
+      font: inherit;
+    }
+
+    input:focus-visible,
+    button:focus-visible,
+    a:focus-visible {
+      outline: 3px solid #7dd3fc;
+      outline-offset: 3px;
+    }
+
+    .buttons {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 22px;
+    }
+
+    button,
+    .link-button {
+      padding: 12px 18px;
+      border: 0;
+      border-radius: 8px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    button[type="submit"] {
+      background: #38bdf8;
+      color: #082f49;
+    }
+
+    #cancel,
+    .link-button {
+      background: #475569;
+      color: #fff;
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    #status {
+      min-height: 1.6em;
+      margin-bottom: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .note {
+      margin-top: 24px;
+      font-size: 0.875rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>File URL Downloader</h1>
+    <p>Paste a direct file link to download it to this device.</p>
+
+    <form id="download-form">
+      <label for="url">File URL</label>
+      <input
+        id="url"
+        type="url"
+        placeholder="https://example.com/files/document.pdf"
+        required
+        autocomplete="off"
+        spellcheck="false"
+      >
+
+      <label for="filename">Save as (optional)</label>
+      <input
+        id="filename"
+        type="text"
+        placeholder="Leave blank to use the URL's filename"
+        maxlength="180"
+      >
+
+      <div class="buttons">
+        <button id="download" type="submit">Download file</button>
+        <button id="cancel" type="button" hidden>Cancel</button>
+        <a
+          id="original"
+          class="link-button"
+          target="_blank"
+          rel="noopener noreferrer"
+          referrerpolicy="no-referrer"
+          hidden
+        >Open original link</a>
+      </div>
+    </form>
+
+    <p id="status" role="status" aria-live="polite"></p>
+
+    <p class="note">
+      The file host must permit browser access (CORS).
+      This tool does not bypass sign-ins or website restrictions.
+      The entire file is loaded into memory before saving, so avoid
+      very large files. Download only files from sources you trust.
+    </p>
+  </main>
+
+  <script>
+    "use strict";
+
+    const form = document.getElementById("download-form");
+    const urlInput = document.getElementById("url");
+    const filenameInput = document.getElementById("filename");
+    const downloadButton = document.getElementById("download");
+    const cancelButton = document.getElementById("cancel");
+    const originalLink = document.getElementById("original");
+    const status = document.getElementById("status");
+
+    let controller = null;
+
+    function cleanFilename(value) {
+      const cleaned = value
+        .replace(/[<>:"/\\|?*\u0000-\u001F\u007F]/g, "_")
+        .replace(/^\.+/, "")
+        .replace(/[. ]+$/, "")
+        .trim();
+
+      return cleaned.slice(0, 180) || "download";
+    }
+
+    function filenameFromURL(url) {
+      const lastPart = url.pathname.split("/").pop() || "download";
+
+      try {
+        return decodeURIComponent(lastPart);
+      } catch {
+        return lastPart;
+      }
+    }
+
+    function setBusy(busy) {
+      downloadButton.disabled = busy;
+      urlInput.disabled = busy;
+      filenameInput.disabled = busy;
+      cancelButton.hidden = !busy;
+      form.setAttribute("aria-busy", String(busy));
+    }
+
+    cancelButton.addEventListener("click", () => {
+      if (controller) {
+        controller.abort();
+      }
+    });
+
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      let url;
+
+      try {
+        url = new URL(urlInput.value.trim());
+
+        if (!["http:", "https:"].includes(url.protocol)) {
+          throw new Error("Only HTTP and HTTPS URLs are supported.");
+        }
+
+        if (url.username || url.password) {
+          throw new Error("URLs containing a username or password are not supported.");
+        }
+      } catch (error) {
+        status.textContent = error instanceof TypeError
+          ? "Enter a valid, complete HTTP or HTTPS URL."
+          : error.message;
+        return;
+      }
+
+      originalLink.hidden = true;
+      originalLink.removeAttribute("href");
+
+      controller = new AbortController();
+      setBusy(true);
+      status.textContent = "Fetching file…";
+
+      try {
+        const response = await fetch(url.href, {
+          method: "GET",
+          mode: "cors",
+          credentials: "omit",
+          referrerPolicy: "no-referrer",
+          signal: controller.signal
+        });
+
+        if (!response.ok) {
+          throw new Error(`The server returned HTTP ${response.status}.`);
+        }
+
+        status.textContent = "Receiving file…";
+
+        const blob = await response.blob();
+
+        if (controller.signal.aborted) {
+          throw new DOMException("Download cancelled.", "AbortError");
+        }
+
+        const name = cleanFilename(
+          filenameInput.value.trim() || filenameFromURL(url)
+        );
+
+        const objectURL = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+
+        link.href = objectURL;
+        link.download = name;
+        link.hidden = true;
+
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+
+        // Leave time for the browser to start saving the file.
+        setTimeout(() => URL.revokeObjectURL(objectURL), 60000);
+
+        status.textContent =
+          `Download requested: ${name}. Check your browser's downloads.`;
+      } catch (error) {
+        if (error.name === "AbortError") {
+          status.textContent = "Download cancelled.";
+        } else {
+          const reason = error instanceof TypeError
+            ? "The browser could not fetch the file. Possible causes include CORS restrictions, a network problem, or a blocked URL."
+            : error.message;
+
+          status.textContent =
+            reason +
+            " You can try opening the original link instead; it may display the file rather than save it.";
+
+          originalLink.href = url.href;
+          originalLink.hidden = false;
+        }
+      } finally {
+        controller = null;
+        setBusy(false);
+      }
+    });
+  </script>
+</body>
+</html>
